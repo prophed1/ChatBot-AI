@@ -1,0 +1,6 @@
+{
+  "name": "Claude AI Interface Clone",
+  "description": "A premium Dark Mode AI chatbot web application inspired by the official Claude interface, powered by Anthropic's Opus model API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
