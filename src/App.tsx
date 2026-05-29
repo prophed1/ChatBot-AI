@@ -734,10 +734,22 @@ export default function App() {
             <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="max-w-3xl mx-auto w-full p-4 rounded-xl bg-red-900/20 border border-red-900/50 flex flex-col sm:flex-row items-center gap-3 text-red-200 mt-2"
+              className="max-w-3xl mx-auto w-full p-4 rounded-xl bg-[#2A1616] border border-[#5C2B2B] flex flex-col sm:flex-row items-center justify-between gap-3 text-[#FFB4B4] mt-2 shadow-sm"
             >
-              <AlertCircle size={20} className="shrink-0" />
-              <div className="flex-1 text-sm">{error}</div>
+              <div className="flex items-center gap-3 w-full">
+                 <AlertCircle size={18} className="shrink-0" />
+                 <div className="flex-1 text-sm font-medium">{error}</div>
+                 <button 
+                   onClick={() => {
+                      if (messages.length > 0 && messages[messages.length - 1].role === 'user' && currentSessionId) {
+                         executeAIFetch(messages, currentSessionId);
+                      }
+                   }}
+                   className="px-3 py-1.5 bg-[#4A1D1D] hover:bg-[#5C2B2B] rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0"
+                 >
+                   <RefreshCcw size={12} /> Retry
+                 </button>
+              </div>
             </motion.div>
           )}
 
