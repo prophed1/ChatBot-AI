@@ -5,7 +5,7 @@ export interface Attachment {
 }
 
 export interface Message {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   attachments?: Attachment[];
 }
@@ -15,9 +15,22 @@ export interface AIModel {
   name: string;
 }
 
+export interface Project {
+  id: string;
+  name: string;
+}
+
+export interface Persona {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
 export interface ChatSession {
   id: string;
   title: string;
   messages: Message[];
   updatedAt: number;
+  projectId?: string;
+  systemPrompt?: string;
 }

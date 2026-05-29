@@ -1,11 +1,11 @@
-import React, { useRef, useEffect } from 'react';
-import { ArrowUp, Paperclip, X, FileText } from 'lucide-react';
+import React, { useRef, useEffect, useState } from 'react';
+import { ArrowUp, Paperclip, X, FileText, Mic, MicOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Attachment } from '../types';
 
 interface ChatInputProps {
   input: string;
-  setInput: (value: string) => void;
+  setInput: (value: string | ((prev: string) => string)) => void;
   onSubmit: (e: React.FormEvent) => void;
   isLoading: boolean;
   attachments: Attachment[];
@@ -22,6 +22,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -29,6 +31,48 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
     }
   }, [input, attachments]);
+
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
+      recognitionRef.current.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+        if (finalTranscript) {
+           setInput((prev: string) => prev ? prev + ' ' + finalTranscript : finalTranscript);
+        }
+      };
+      recognitionRef.current.onend = () => {
+         setIsRecording(false);
+      };
+    }
+    return () => {
+       if (recognitionRef.current) {
+          recognitionRef.current.stop();
+       }
+    };
+  }, []);
+
+  const toggleRecording = () => {
+     if (isRecording) {
+        recognitionRef.current?.stop();
+        setIsRecording(false);
+     } else {
+        recognitionRef.current?.start();
+        setIsRecording(true);
+     }
+  };
+
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -119,6 +163,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           aria-label="Attach file"
         >
           <Paperclip size={20} />
+        </button>
+        <button
+          type="button"
+          onClick={toggleRecording}
+          className={`p-3 transition-colors mt-auto mb-1 rounded-xl ${isRecording ? 'text-red-400' : 'text-[#A0A0A0] hover:text-[#D0D0D0]'}`}
+          aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+        >
+          {isRecording ? <MicOff size={20} className="animate-pulse" /> : <Mic size={20} />}
         </button>
         <input 
           type="file" 

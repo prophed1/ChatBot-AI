@@ -1,10 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { User, Sparkles, AlertCircle, Download, Trash2, ChevronDown, Image as ImageIcon, FileText, Menu, Plus, Search, MessageSquare } from 'lucide-react';
+import { User, Sparkles, AlertCircle, Download, Trash2, ChevronDown, Image as ImageIcon, FileText, Menu, Plus, Search, MessageSquare, Mic, MicOff, Edit, RefreshCcw, Volume2, VolumeX, FolderPlus, Folder, Settings } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ChatInput } from './components/ChatInput';
-import { Message, Attachment, AIModel, ChatSession } from './types';
+import { Message, Attachment, AIModel, ChatSession, Project, Persona } from './types';
 import jsPDF from 'jspdf';
+
+const DEFAULT_PERSONAS: Persona[] = [
+  { id: 'default', name: 'Default Assistant', prompt: 'You are a helpful AI assistant.' },
+  { id: 'expert-coder', name: 'Expert Programmer', prompt: 'You are an expert programmer. Provide clean, efficient code without unnecessary explanations unless asked.' },
+  { id: 'creative-writer', name: 'Creative Writer', prompt: 'You are a creative writer. Use evocative language, metaphors, and imaginative flair in your responses.' }
+];
 
 export default function App() {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
@@ -57,7 +63,46 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
+  const [projects, setProjects] = useState<Project[]>(() => {
+    try {
+      const saved = localStorage.getItem('claudeHistory_projects');
+      if (saved) return JSON.parse(saved);
+      return [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+
+  const [personas, setPersonas] = useState<Persona[]>(() => {
+    try {
+       const saved = localStorage.getItem('ai_personas');
+       if (saved) return JSON.parse(saved);
+       return DEFAULT_PERSONAS;
+    } catch {
+       return DEFAULT_PERSONAS;
+    }
+  });
+  
+  const [selectedPersonaId, setSelectedPersonaId] = useState('default');
+  const [isPersonasOpen, setIsPersonasOpen] = useState(false);
+
+  const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
+
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editValue, setEditValue] = useState('');
+
   useEffect(() => {
+    localStorage.setItem('claudeHistory_projects', JSON.stringify(projects));
+  }, [projects]);
+
+  useEffect(() => {
+    localStorage.setItem('ai_personas', JSON.stringify(personas));
+  }, [personas]);
+
+  useEffect(() => {
+
     localStorage.setItem('claudeHistory_sessions', JSON.stringify(sessions));
   }, [sessions]);
 
@@ -95,7 +140,7 @@ export default function App() {
     if (scrollRef.current) {
       scrollRef.current.scrollTo({
         top: scrollRef.current.scrollHeight,
-        behavior: 'smooth',
+        behavior: isLoading ? 'auto' : 'smooth',
       });
     }
   }, [messages, isLoading]);
@@ -148,41 +193,40 @@ export default function App() {
     doc.save(`chat-export-${new Date().toISOString().split('T')[0]}.pdf`);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if ((!input.trim() && attachments.length === 0) || isLoading) return;
-
-    const userMessage = input.trim();
-    const currentAttachments = [...attachments];
-    
-    setInput('');
-    setAttachments([]);
-    setError(null);
-    setIsLoading(true);
-
-    const newMsg: Message = { role: 'user', content: userMessage };
-    if (currentAttachments.length > 0) {
-       newMsg.attachments = currentAttachments;
-    }
-
-    const newMessages: Message[] = [...messages, newMsg];
-    
-    let sessionId = currentSessionId;
-    if (!sessionId) {
-       sessionId = Date.now().toString();
-       setCurrentSessionId(sessionId);
-       const title = userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : '');
-       setSessions(prev => [{ id: sessionId, title, messages: newMessages, updatedAt: Date.now() }, ...prev]);
+  const toggleSpeak = (text: string, index: number) => {
+    if (speakingIndex === index) {
+      window.speechSynthesis.cancel();
+      setSpeakingIndex(null);
     } else {
-       setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, messages: newMessages, updatedAt: Date.now() } : s));
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.onend = () => setSpeakingIndex(null);
+      window.speechSynthesis.speak(utterance);
+      setSpeakingIndex(index);
     }
-    
-    setMessages(newMessages);
+  };
+
+  const handleCreateProject = () => {
+    const name = window.prompt("Enter project name:");
+    if (name) {
+      setProjects([...projects, { id: Date.now().toString(), name }]);
+    }
+  };
+
+  const executeAIFetch = async (newMessages: Message[], sessionId: string) => {
+    setIsLoading(true);
+    setError(null);
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
     try {
-      // Format messages for the OpenAI compatible endpoint wrapper
-      const apiMessages = newMessages.map(msg => {
+      const activePersona = personas.find(p => p.id === selectedPersonaId) || DEFAULT_PERSONAS[0];
+      
+      const apiMessages = [];
+      if (activePersona.prompt && activePersona.id !== 'default') {
+         apiMessages.push({ role: 'system', content: activePersona.prompt });
+      }
+
+      newMessages.forEach(msg => {
          if (msg.role === 'user' && msg.attachments && msg.attachments.length > 0) {
             const contentArray: any[] = [];
             if (msg.content) {
@@ -195,9 +239,10 @@ export default function App() {
                   contentArray.push({ type: 'text', text: `\n\n--- Attached File: ${att.name} ---\n${att.data}` });
                }
             });
-            return { role: msg.role, content: contentArray };
+            apiMessages.push({ role: msg.role, content: contentArray });
+         } else {
+            apiMessages.push({ role: msg.role, content: msg.content });
          }
-         return { role: msg.role, content: msg.content };
       });
 
       const response = await fetch('/api/chat', {
@@ -270,10 +315,64 @@ export default function App() {
     }
   };
 
-  const filteredSessions = sessions.filter(s => 
-    s.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    s.messages.some(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()))
-  ).sort((a, b) => b.updatedAt - a.updatedAt);
+  const handleRegenerate = (index: number) => {
+    if (isLoading || !currentSessionId) return;
+    const newMessages = messages.slice(0, index);
+    setMessages(newMessages);
+    executeAIFetch(newMessages, currentSessionId);
+  };
+
+  const handleEditSave = (index: number) => {
+    if (isLoading || !currentSessionId || !editValue.trim()) return;
+    
+    // We update the message at `index`, then truncate anything after it
+    const updatedMessages = messages.slice(0, index + 1);
+    updatedMessages[index] = { ...updatedMessages[index], content: editValue.trim() };
+    
+    setEditingIndex(null);
+    setEditValue('');
+    setMessages(updatedMessages);
+    executeAIFetch(updatedMessages, currentSessionId);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if ((!input.trim() && attachments.length === 0) || isLoading) return;
+
+    const userMessage = input.trim();
+    const currentAttachments = [...attachments];
+    
+    setInput('');
+    setAttachments([]);
+    setError(null);
+
+    const newMsg: Message = { role: 'user', content: userMessage };
+    if (currentAttachments.length > 0) {
+       newMsg.attachments = currentAttachments;
+    }
+
+    const newMessages: Message[] = [...messages, newMsg];
+    
+    let sessionId = currentSessionId;
+    if (!sessionId) {
+       sessionId = Date.now().toString();
+       setCurrentSessionId(sessionId);
+       const title = userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : '');
+       setSessions(prev => [{ id: sessionId, title, messages: newMessages, updatedAt: Date.now(), projectId: activeProjectId || undefined, systemPrompt: selectedPersonaId }, ...prev]);
+    } else {
+       setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, messages: newMessages, updatedAt: Date.now() } : s));
+    }
+    
+    setMessages(newMessages);
+    executeAIFetch(newMessages, sessionId);
+  };
+
+  const filteredSessions = sessions.filter(s => {
+    const matchesSearch = s.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                     s.messages.some(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()));
+    const matchesProject = activeProjectId ? s.projectId === activeProjectId : true;
+    return matchesSearch && matchesProject;
+  }).sort((a, b) => b.updatedAt - a.updatedAt);
 
   return (
     <div className="flex h-screen w-full bg-[#1F1F1F] text-[#ECECEC] font-sans selection:bg-[#4d6a8a] selection:text-white overflow-hidden">
@@ -318,6 +417,49 @@ export default function App() {
              
              {/* Session List */}
              <div className="flex-1 overflow-y-auto px-2 pb-4 flex flex-col gap-1 list-none custom-scrollbar">
+                
+                <div className="flex items-center justify-between px-3 py-1 mt-2 mb-1">
+                   <div className="text-xs font-semibold tracking-wider text-[#666] uppercase">Projects / Spaces</div>
+                   <button onClick={handleCreateProject} className="text-[#888] hover:text-[#CCC] transition-colors"><FolderPlus size={14}/></button>
+                </div>
+                
+                <div 
+                   onClick={() => setActiveProjectId(null)}
+                   className={`flex items-center gap-2.5 group px-3 py-2 cursor-pointer rounded-lg transition-colors ${
+                     activeProjectId === null ? 'bg-[#2D2D2D] text-white' : 'hover:bg-[#252525] text-[#A0A0A0]'
+                   }`}
+                >
+                   <Folder size={14} className={activeProjectId === null ? 'text-white' : 'text-[#888]'} />
+                   <span className="truncate text-sm flex-1 font-medium">All Chats</span>
+                </div>
+
+                {projects.map(p => (
+                   <div 
+                     key={p.id}
+                     onClick={() => setActiveProjectId(p.id)}
+                     className={`flex items-center gap-2.5 group px-3 py-2 cursor-pointer rounded-lg transition-colors ${
+                       activeProjectId === p.id ? 'bg-[#2D2D2D] text-white' : 'hover:bg-[#252525] text-[#A0A0A0]'
+                     }`}
+                   >
+                      <Folder size={14} className={activeProjectId === p.id ? 'text-white' : 'text-[#888]'} />
+                      <span className="truncate text-sm flex-1 font-medium">{p.name}</span>
+                      <button 
+                         onClick={(e) => {
+                            e.stopPropagation();
+                            if(window.confirm('Delete project? Chats will remain in All Chats.')) {
+                               setProjects(projects.filter(pr => pr.id !== p.id));
+                               if (activeProjectId === p.id) setActiveProjectId(null);
+                            }
+                         }}
+                         className="opacity-0 group-hover:opacity-100 p-1 hover:bg-[#444] rounded text-[#888] hover:text-red-400 transition-all shrink-0"
+                      >
+                         <Trash2 size={12} />
+                      </button>
+                   </div>
+                ))}
+                
+                <div className="h-px bg-[#333] my-3 mx-2"></div>
+
                 <div className="px-3 py-1 mb-1 text-xs font-semibold tracking-wider text-[#666] uppercase">Chat History</div>
                 {filteredSessions.map(session => (
                    <div 
@@ -358,44 +500,51 @@ export default function App() {
             >
                <Menu size={20} />
             </button>
-            <div className="relative group">
-              <div 
-                 className="flex items-center gap-2 cursor-pointer hover:bg-[#2D2D2D] px-2 sm:px-3 py-2 rounded-lg transition-colors"
-                 onClick={() => setIsModelsOpen(!isModelsOpen)}
+            
+            <div className="relative">
+              <button
+                onClick={() => setIsPersonasOpen(!isPersonasOpen)}
+                className="flex items-center gap-2 px-2.5 py-1.5 hover:bg-[#2D2D2D] rounded-lg transition-colors text-sm text-[#A0A0A0] hover:text-white border border-transparent hover:border-[#3E3E3E]"
               >
-                <div className="w-6 h-6 rounded bg-[#1A1A1A] border border-[#3E3E3E] flex items-center justify-center shadow-sm">
-                  <Sparkles size={12} className="text-[#ECECEC]" />
+                <Settings size={14} />
+                <span className="hidden sm:inline">Persona: {personas.find(p => p.id === selectedPersonaId)?.name || 'Default Assistant'}</span>
+                <ChevronDown size={14} />
+              </button>
+              
+              {isPersonasOpen && (
+                <div className="absolute top-full left-0 mt-1 w-64 bg-[#252525] border border-[#3E3E3E] rounded-xl shadow-xl z-50 overflow-hidden text-sm">
+                  <div className="px-3 py-2 text-xs font-semibold tracking-wider text-[#888] uppercase border-b border-[#333]">System Persona</div>
+                  {personas.map(p => (
+                    <div
+                      key={p.id}
+                      onClick={() => { setSelectedPersonaId(p.id); setIsPersonasOpen(false); }}
+                      className={`px-3 py-2 cursor-pointer hover:bg-[#333] transition-colors flex flex-col gap-0.5 ${selectedPersonaId === p.id ? 'bg-[#333] text-white' : 'text-[#CCC]'}`}
+                    >
+                      <span className="font-medium">{p.name}</span>
+                      <span className="text-xs text-[#888] truncate">{p.prompt}</span>
+                    </div>
+                  ))}
+                  <div 
+                    className="px-3 py-2 border-t border-[#333] hover:bg-[#333] cursor-pointer text-[#A0C4FF] transition-colors font-medium text-center"
+                    onClick={() => {
+                        const name = window.prompt("Persona Name:");
+                        const prompt = window.prompt("System Instructions:");
+                        if (name && prompt) {
+                            const newPersona = { id: Date.now().toString(), name, prompt };
+                            setPersonas([...personas, newPersona]);
+                            setSelectedPersonaId(newPersona.id);
+                            setIsPersonasOpen(false);
+                        }
+                    }}
+                  >
+                     + Custom Persona
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                   <span className="font-medium tracking-tight text-[14px]">
-                 {models.find(m => m.id === selectedModel)?.name || selectedModel}
-               </span>
-               <ChevronDown size={14} className="text-[#888]" />
+              )}
             </div>
           </div>
-          
-           {isModelsOpen && (
-             <div className="absolute top-full left-0 mt-1 w-64 bg-[#252525] border border-[#3E3E3E] rounded-xl shadow-xl z-20 overflow-hidden text-sm max-h-[300px] overflow-y-auto">
-                <div className="px-3 py-2 text-xs font-semibold tracking-wider text-[#888] uppercase border-b border-[#333]">Available Models</div>
-                {models.map(m => (
-                   <div 
-                     key={m.id}
-                     className={`px-3 py-2.5 cursor-pointer flex flex-col gap-0.5 hover:bg-[#333] transition-colors ${selectedModel === m.id ? 'bg-[#333] text-white' : 'text-[#CCC]'}`}
-                     onClick={() => {
-                        setSelectedModel(m.id);
-                        setIsModelsOpen(false);
-                     }}
-                   >
-                     <span className="font-medium">{m.name || m.id}</span>
-                     <span className="text-xs opacity-60 font-mono">{m.id}</span>
-                   </div>
-                ))}
-             </div>
-          )}
-        </div>
-      </div>
         
-      <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <button 
               onClick={handleExport}
               className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-[#2D2D2D] rounded-lg transition-colors text-sm text-[#A0A0A0] hover:text-white"
@@ -404,10 +553,10 @@ export default function App() {
               <FileText size={15} />
               <span className="hidden sm:inline">Export PDF</span>
             </button>
-        </div>
-      </header>
+          </div>
+        </header>
 
-      {/* Main Chat Content */}
+        {/* Main Chat Content */}
       <main ref={scrollRef} className="flex-1 overflow-y-auto pb-32 pt-4 px-4 scroll-smooth" onClick={() => setIsModelsOpen(false)}>
         <div className="max-w-3xl mx-auto flex flex-col gap-8 pb-8">
           
@@ -472,7 +621,7 @@ export default function App() {
                   }`}
                 >
                   {msg.role === 'user' ? (
-                    <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-3 group/msg">
                        {msg.attachments && msg.attachments.length > 0 && (
                           <div className="flex flex-wrap gap-2 mb-1">
                              {msg.attachments.map((att, i) => (
@@ -487,10 +636,67 @@ export default function App() {
                              ))}
                           </div>
                        )}
-                       {msg.content && <div className="whitespace-pre-wrap leading-relaxed text-[15px]">{msg.content}</div>}
+                       {editingIndex === index ? (
+                         <div className="flex flex-col gap-2 w-full min-w-[200px] sm:min-w-[300px]">
+                           <textarea
+                             value={editValue}
+                             onChange={(e) => setEditValue(e.target.value)}
+                             className="w-full bg-[#1A1A1A] text-[#ECECEC] p-3 rounded-lg border border-[#4A4A4A] resize-none focus:outline-none focus:border-[#666] text-sm"
+                             rows={3}
+                           />
+                           <div className="flex justify-end gap-2">
+                             <button
+                               onClick={() => setEditingIndex(null)}
+                               className="px-3 py-1.5 text-xs text-[#AAA] hover:text-white transition-colors"
+                             >
+                               Cancel
+                             </button>
+                             <button
+                               onClick={() => handleEditSave(index)}
+                               className="px-3 py-1.5 text-xs bg-white text-black rounded-lg hover:bg-gray-200 transition-colors font-medium"
+                             >
+                               Save & Send
+                             </button>
+                           </div>
+                         </div>
+                       ) : (
+                         <div className="relative">
+                           {msg.content && <div className="whitespace-pre-wrap leading-relaxed text-[15px]">{msg.content}</div>}
+                           <div className="absolute -bottom-8 right-0 opacity-0 group-hover/msg:opacity-100 transition-all">
+                             <button
+                               onClick={() => { setEditingIndex(index); setEditValue(msg.content); }}
+                               className="p-1.5 text-[#888] hover:text-white bg-[#252525] hover:bg-[#333] rounded-lg shadow-sm border border-[#3E3E3E] transition-colors"
+                               title="Edit Message"
+                             >
+                                <Edit size={14} />
+                             </button>
+                           </div>
+                         </div>
+                       )}
                     </div>
                   ) : (
-                    <MarkdownRenderer content={msg.content} />
+                    <div className="group/msg relative w-full">
+                      <MarkdownRenderer content={msg.content} />
+                      {msg.content && !isLoading && (
+                        <div className="flex items-center gap-1 mt-2 opacity-0 group-hover/msg:opacity-100 transition-opacity bg-[#1F1F1F] rounded-lg">
+                          <button
+                            onClick={() => toggleSpeak(msg.content, index)}
+                            className="p-1.5 text-[#A0A0A0] hover:text-white hover:bg-[#2D2D2D] rounded-md transition-colors"
+                            title={speakingIndex === index ? "Stop voice" : "Read aloud"}
+                          >
+                             {speakingIndex === index ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                          </button>
+                          <button
+                            onClick={() => handleRegenerate(index)}
+                            className="p-1.5 text-[#A0A0A0] hover:text-white hover:bg-[#2D2D2D] rounded-md transition-colors flex items-center gap-1.5"
+                            title="Regenerate response"
+                          >
+                             <RefreshCcw size={14} />
+                             <span className="text-xs font-medium">Retry</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               </motion.div>
@@ -520,7 +726,60 @@ export default function App() {
 
       {/* Input Area */}
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#1F1F1F] via-[#1F1F1F] to-transparent pt-12">
-        <div className="max-w-3xl mx-auto w-full relative">
+        <div className="max-w-3xl mx-auto w-full relative flex flex-col gap-2">
+          
+          <div className="relative self-start">
+             <button
+                onClick={() => setIsModelsOpen(!isModelsOpen)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[#A0A0A0] hover:text-[#ECECEC] hover:bg-[#333] border border-transparent hover:border-[#444] rounded-lg transition-colors font-medium bg-[#2A2A2A]"
+             >
+                <Sparkles size={12} className="text-[#888]" />
+                {models.find(m => m.id === selectedModel)?.name || selectedModel}
+                <ChevronDown size={12} className="opacity-60 ml-0.5" />
+             </button>
+             
+             <AnimatePresence>
+             {isModelsOpen && (
+               <motion.div 
+                 initial={{ opacity: 0, y: 10 }}
+                 animate={{ opacity: 1, y: 0 }}
+                 exit={{ opacity: 0, y: 10 }}
+                 className="absolute bottom-full left-0 mb-2 w-72 bg-[#252525] border border-[#3E3E3E] rounded-xl shadow-2xl z-50 overflow-hidden text-sm max-h-[350px] flex flex-col"
+               >
+                  <div className="px-3 py-2 text-[10px] font-bold tracking-widest text-[#666] uppercase border-b border-[#333] shadow-sm select-none">
+                    Select AI Model
+                  </div>
+                  <div className="overflow-y-auto custom-scrollbar flex-1">
+                  {models.map(m => {
+                     const isFast = m.id.toLowerCase().includes('nano') || m.id.toLowerCase().includes('mini') || m.id.toLowerCase().includes('flash') || m.id.toLowerCase().includes('haiku');
+                     const isBest = m.id.toLowerCase().includes('opus') || m.id.toLowerCase().includes('4.5') || m.id.toLowerCase().includes('4-5') || m.id.toLowerCase().includes('5.5') || m.id.toLowerCase().includes('gpt-4');
+                     
+                     return (
+                       <div 
+                         key={m.id}
+                         className={`px-3 py-2.5 cursor-pointer flex items-center justify-between hover:bg-[#333] transition-colors relative ${selectedModel === m.id ? 'bg-[#333] text-white' : 'text-[#CCC]'}`}
+                         onClick={() => {
+                            setSelectedModel(m.id);
+                            setIsModelsOpen(false);
+                         }}
+                       >
+                         <div className="flex flex-col gap-0.5 pr-2">
+                            <span className="font-medium flex items-center gap-1.5">
+                              {m.name || m.id}
+                            </span>
+                            <span className="text-[10px] opacity-50 font-mono tracking-tight">{m.id}</span>
+                         </div>
+                         {isFast && <span className="text-[9px] uppercase tracking-wider font-bold bg-green-500/10 text-green-400 px-1.5 py-0.5 rounded border border-green-500/20 shrink-0">Fastest</span>}
+                         {isBest && <span className="text-[9px] uppercase tracking-wider font-bold bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded border border-blue-500/20 shrink-0">Best Quality</span>}
+                       </div>
+                     );
+                  })}
+                  </div>
+               </motion.div>
+             )}
+             </AnimatePresence>
+          </div>
+
           <ChatInput
             input={input}
             setInput={setInput}

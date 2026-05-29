@@ -7,7 +7,7 @@ app.get('/api/models', async (req, res) => {
   try {
     const apiKey = process.env.PAXSENIX_API_KEY;
     if (!apiKey) return res.json({ data: [] });
-    const apiUrl = process.env.PAXSENIX_API_URL || 'https://api.paxsenix.biz.id/v1/chat/completions';
+    const apiUrl = process.env.PAXSENIX_API_URL || 'https://api.paxsenix.org/v1/chat/completions';
     const baseUrl = apiUrl.replace(/\/chat\/completions\/?$/, '/models');
     const response = await fetch(baseUrl, {
       method: 'GET',
@@ -16,6 +16,12 @@ app.get('/api/models', async (req, res) => {
         'x-api-key': apiKey
       }
     });
+
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      return res.status(502).json({ error: 'Upstream provider returned an HTML page (Timeout or Server Error). Please try again later.' });
+    }
+
     const data = await response.json();
     res.json(data);
   } catch (e: any) {
@@ -31,7 +37,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const { messages } = req.body;
-    let apiUrl = process.env.PAXSENIX_API_URL || 'https://api.paxsenix.biz.id/v1/chat/completions';
+    let apiUrl = process.env.PAXSENIX_API_URL || 'https://api.paxsenix.org/v1/chat/completions';
     
     if (!apiUrl.includes('/v1/chat/completions')) {
       apiUrl = apiUrl.replace(/\/$/, '') + '/v1/chat/completions';
@@ -58,12 +64,15 @@ app.post('/api/chat', async (req, res) => {
       body: JSON.stringify(payload)
     });
 
+    const upstreamContentType = response.headers.get('content-type') || '';
+
     if (!response.ok) {
       const errorText = await response.text();
+      if (upstreamContentType.includes('text/html') || errorText.includes('<!DOCTYPE html>')) {
+         return res.status(502).json({ error: `Upstream provider failed. (HTTP ${response.status} - Timeout/Gateway Error). Please try again later.` });
+      }
       return res.status(response.status).json({ error: `API Error: ${response.status} ${errorText}` });
     }
-
-    const upstreamContentType = response.headers.get('content-type') || '';
     if (upstreamContentType.includes('application/json')) {
       const data = await response.json();
       res.setHeader('Content-Type', 'text/event-stream');

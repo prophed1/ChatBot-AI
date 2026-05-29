@@ -47,7 +47,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, value }) => {
   );
 };
 
-export const MarkdownRenderer = ({ content }: { content: string }) => {
+export const MarkdownRenderer = React.memo(({ content }: { content: string }) => {
   return (
     <div className="markdown-body prose prose-invert max-w-none w-full
       prose-p:leading-relaxed prose-p:text-[15px] prose-p:text-[#E0E0E0] prose-p:my-3
@@ -93,4 +93,4 @@ export const MarkdownRenderer = ({ content }: { content: string }) => {
       </ReactMarkdown>
     </div>
   );
-};
+});
