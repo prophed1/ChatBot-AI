@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { User, Sparkles, AlertCircle, Download, Trash2, ChevronDown, Image as ImageIcon, FileText, Menu, Plus, Search, MessageSquare, Mic, MicOff, Edit, RefreshCcw, Volume2, VolumeX, FolderPlus, Folder, Settings, WifiOff } from 'lucide-react';
+import { User, Sparkles, AlertCircle, Download, Trash2, ChevronDown, Image as ImageIcon, FileText, Menu, Plus, Search, MessageSquare, Mic, MicOff, Edit, RefreshCcw, Volume2, VolumeX, FolderPlus, Folder, Settings, WifiOff, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ChatInput } from './components/ChatInput';
@@ -36,18 +36,27 @@ export default function App() {
     }
   });
   
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(() => {
-    try {
-      const saved = localStorage.getItem('claudeHistory_sessions');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.length > 0) return parsed[0].id;
-      }
-      const oldSaved = localStorage.getItem('claudeHistory');
-      if (oldSaved && JSON.parse(oldSaved).length > 0) return 'legacy_session';
-    } catch {}
-    return null;
-  });
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const currentSessionIdRef = useRef(currentSessionId);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
+
+  const switchSession = (id: string | null, sessionMessages: Message[] = []) => {
+    window.speechSynthesis.cancel();
+    setSpeakingIndex(null);
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsLoading(false);
+    setError(null);
+    setCurrentSessionId(id);
+    setMessages(sessionMessages);
+    setIsSidebarOpen(false);
+  };
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -57,7 +66,9 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const [models, setModels] = useState<AIModel[]>([{ id: 'claude-sonnet-4-5', name: 'Claude 3.5 Sonnet' }]);
-  const [selectedModel, setSelectedModel] = useState('claude-sonnet-4-5');
+  const [selectedModel, setSelectedModel] = useState(() => {
+    return localStorage.getItem('ai_selectedModel') || 'claude-sonnet-4-5';
+  });
   const [isModelsOpen, setIsModelsOpen] = useState(false);
   
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -116,18 +127,12 @@ export default function App() {
   }, [personas]);
 
   useEffect(() => {
-
     localStorage.setItem('claudeHistory_sessions', JSON.stringify(sessions));
   }, [sessions]);
 
   useEffect(() => {
-    if (currentSessionId) {
-       const session = sessions.find(s => s.id === currentSessionId);
-       if (session) setMessages(session.messages);
-    } else {
-       setMessages([]);
-    }
-  }, [currentSessionId]);
+    localStorage.setItem('ai_selectedModel', selectedModel);
+  }, [selectedModel]);
 
   useEffect(() => {
     fetch('/api/models')
@@ -163,7 +168,7 @@ export default function App() {
     if (window.confirm('Are you sure you want to delete this chat session?')) {
       setSessions(prev => prev.filter(s => s.id !== id));
       if (currentSessionId === id) {
-        setCurrentSessionId(null);
+        switchSession(null, []);
       }
     }
   };
@@ -228,6 +233,11 @@ export default function App() {
   };
 
   const executeAIFetch = async (newMessages: Message[], sessionId: string) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+    
     setIsLoading(true);
     setError(null);
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
@@ -263,6 +273,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: selectedModel, messages: apiMessages }),
+        signal: abortControllerRef.current.signal,
       });
 
       const contentType = response.headers.get('content-type');
@@ -284,33 +295,40 @@ export default function App() {
       const decoder = new TextDecoder('utf-8');
       if (!reader) throw new Error('No stream available');
       let currentStreamText = '';
+      let buffer = '';
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        
+        // Keep the last partial line in the buffer
+        buffer = lines.pop() || '';
+
         for (const line of lines) {
-          if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+          const trimmedLine = line.trim();
+          if (trimmedLine.startsWith('data: ') && trimmedLine !== 'data: [DONE]') {
             try {
-              const data = JSON.parse(line.slice(6));
+              const data = JSON.parse(trimmedLine.slice(6));
               if (data.choices && data.choices[0]?.delta?.content) {
                 currentStreamText += data.choices[0].delta.content;
               } else if (data.type === 'content_block_delta' && data.delta?.text) {
                 currentStreamText += data.delta.text;
               }
-            } catch (e) {}
+            } catch (e) {
+              // Ignore parse errors on incomplete JSON chunks that might be sent via SSE
+            }
           }
-        }
-        
-        if (!chunk.includes('data: ')) {
-           currentStreamText += chunk;
         }
 
         setMessages(prev => {
+          if (sessionId !== currentSessionIdRef.current) return prev;
           const updated = [...prev];
-          updated[updated.length - 1].content = currentStreamText.replace(/undefined/g, ''); 
+          if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
+             updated[updated.length - 1].content = currentStreamText.replace(/undefined/g, ''); 
+          }
           return updated;
         });
       }
@@ -318,8 +336,10 @@ export default function App() {
       setSessions(sessPrev => sessPrev.map(s => s.id === sessionId ? { ...s, messages: [...newMessages, { role: 'assistant', content: currentStreamText.replace(/undefined/g, '') }], updatedAt: Date.now() } : s));
 
     } catch (err: any) {
+      if (err.name === 'AbortError') return;
       setError(err.message || 'An error occurred while communicating with the API.');
       setMessages(prev => {
+        if (sessionId !== currentSessionIdRef.current) return prev;
         let updated = [...prev];
         if (updated[updated.length - 1].role === 'assistant' && !updated[updated.length - 1].content) {
           updated = updated.slice(0, -1);
@@ -328,7 +348,9 @@ export default function App() {
         return updated;
       });
     } finally {
-      setIsLoading(false);
+      if (sessionId === currentSessionIdRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -384,12 +406,14 @@ export default function App() {
     executeAIFetch(newMessages, sessionId);
   };
 
-  const filteredSessions = sessions.filter(s => {
-    const matchesSearch = s.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                     s.messages.some(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()));
-    const matchesProject = activeProjectId ? s.projectId === activeProjectId : true;
-    return matchesSearch && matchesProject;
-  }).sort((a, b) => b.updatedAt - a.updatedAt);
+  const filteredSessions = React.useMemo(() => {
+    return sessions.filter(s => {
+      const matchesSearch = s.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                       s.messages.some(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()));
+      const matchesProject = activeProjectId ? s.projectId === activeProjectId : true;
+      return matchesSearch && matchesProject;
+    }).sort((a, b) => b.updatedAt - a.updatedAt);
+  }, [sessions, searchQuery, activeProjectId]);
 
   return (
     <div className="flex h-screen w-full bg-[#1F1F1F] text-[#ECECEC] font-sans selection:bg-[#4d6a8a] selection:text-white overflow-hidden">
@@ -414,7 +438,7 @@ export default function App() {
              {/* Sidebar Header (New Chat & Search) */}
              <div className="p-4 flex flex-col gap-4">
                 <button 
-                  onClick={() => { setCurrentSessionId(null); setIsSidebarOpen(false); }}
+                  onClick={() => switchSession(null, [])}
                   className="flex items-center gap-2 w-full px-4 py-2.5 bg-[#ECECEC] text-[#1F1F1F] hover:bg-white transition-colors rounded-xl text-sm font-semibold shadow-sm justify-center"
                 >
                    <Plus size={18} strokeWidth={2.5} />
@@ -485,7 +509,7 @@ export default function App() {
                 {filteredSessions.map(session => (
                    <div 
                      key={session.id}
-                     onClick={() => { setCurrentSessionId(session.id); setIsSidebarOpen(false); }}
+                     onClick={() => switchSession(session.id, session.messages)}
                      className={`flex items-center gap-2.5 group px-3 py-2.5 cursor-pointer rounded-lg transition-colors ${
                        currentSessionId === session.id ? 'bg-[#2D2D2D] text-white' : 'hover:bg-[#252525] text-[#A0A0A0]'
                      }`}
@@ -706,6 +730,15 @@ export default function App() {
                       <MarkdownRenderer content={msg.content} />
                       {msg.content && !isLoading && (
                         <div className="flex items-center gap-1 mt-2 opacity-0 group-hover/msg:opacity-100 transition-opacity bg-[#1F1F1F] rounded-lg">
+                          <button
+                            onClick={() => {
+                               navigator.clipboard.writeText(msg.content);
+                            }}
+                            className="p-1.5 text-[#A0A0A0] hover:text-white hover:bg-[#2D2D2D] rounded-md transition-colors"
+                            title="Copy to clipboard"
+                          >
+                             <Copy size={15} />
+                          </button>
                           <button
                             onClick={() => toggleSpeak(msg.content, index)}
                             className="p-1.5 text-[#A0A0A0] hover:text-white hover:bg-[#2D2D2D] rounded-md transition-colors"
