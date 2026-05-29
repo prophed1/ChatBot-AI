@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { User, Sparkles, AlertCircle, Download, Trash2, ChevronDown, Image as ImageIcon, FileText, Menu, Plus, Search, MessageSquare, Mic, MicOff, Edit, RefreshCcw, Volume2, VolumeX, FolderPlus, Folder, Settings } from 'lucide-react';
+import { User, Sparkles, AlertCircle, Download, Trash2, ChevronDown, Image as ImageIcon, FileText, Menu, Plus, Search, MessageSquare, Mic, MicOff, Edit, RefreshCcw, Volume2, VolumeX, FolderPlus, Folder, Settings, WifiOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { ChatInput } from './components/ChatInput';
@@ -92,6 +92,20 @@ export default function App() {
 
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editValue, setEditValue] = useState('');
+
+  const [isOffline, setIsOffline] = useState(false);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    setIsOffline(!navigator.onLine);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('claudeHistory_projects', JSON.stringify(projects));
@@ -297,18 +311,21 @@ export default function App() {
         setMessages(prev => {
           const updated = [...prev];
           updated[updated.length - 1].content = currentStreamText.replace(/undefined/g, ''); 
-          setSessions(sessPrev => sessPrev.map(s => s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s));
           return updated;
         });
       }
 
+      setSessions(sessPrev => sessPrev.map(s => s.id === sessionId ? { ...s, messages: [...newMessages, { role: 'assistant', content: currentStreamText.replace(/undefined/g, '') }], updatedAt: Date.now() } : s));
+
     } catch (err: any) {
       setError(err.message || 'An error occurred while communicating with the API.');
       setMessages(prev => {
-        if (prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content) {
-          return prev.slice(0, -1);
+        let updated = [...prev];
+        if (updated[updated.length - 1].role === 'assistant' && !updated[updated.length - 1].content) {
+          updated = updated.slice(0, -1);
         }
-        return prev;
+        setSessions(sessPrev => sessPrev.map(s => s.id === sessionId ? { ...s, messages: updated, updatedAt: Date.now() } : s));
+        return updated;
       });
     } finally {
       setIsLoading(false);
@@ -458,6 +475,10 @@ export default function App() {
                    </div>
                 ))}
                 
+                {projects.length === 0 && (
+                   <div className="text-center text-[#666] text-[11px] mt-1 mb-2 italic">No custom projects yet</div>
+                )}
+                
                 <div className="h-px bg-[#333] my-3 mx-2"></div>
 
                 <div className="px-3 py-1 mb-1 text-xs font-semibold tracking-wider text-[#666] uppercase">Chat History</div>
@@ -490,6 +511,12 @@ export default function App() {
       {/* Main Chat Area Context flex-col */}
       <div className="flex flex-col flex-1 h-screen overflow-hidden relative min-w-0">
         
+        {isOffline && (
+           <div className="bg-red-500/20 text-red-200 text-xs font-medium py-2 px-4 flex items-center justify-center gap-2 border-b border-red-500/30">
+             <WifiOff size={14} /> You are currently offline. Please check your connection.
+           </div>
+        )}
+
         {/* Top Header */}
         <header className="flex items-center justify-between p-4 sticky top-0 z-10 bg-[#1F1F1F] bg-opacity-95 backdrop-blur-md border-b border-[#2D2D2D]">
           <div className="flex items-center gap-3">
